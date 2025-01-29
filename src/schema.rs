@@ -2,7 +2,7 @@
 
 diesel::table! {
     rustaceans (id) {
-        id -> Nullable<Integer>,
+        id -> Integer,
         name -> Text,
         email -> Text,
         create_at -> Timestamp,
