@@ -5,14 +5,15 @@ mod models;
 mod schema;
 mod repositories;
 
+use rocket::fairing::AdHoc;
 use rocket::http::Status;
 use rocket::response::status;
 use rocket::response::status::Custom;
+use rocket::{Build, Rocket};
 use rocket::serde::json::{Value, json, Json};
 use rocket_sync_db_pools::database;
 use crate::auth::BasicAuth;
 
-use schema::rustaceans;
 use models::Rustacean;
 use crate::models::NewRustacean;
 
@@ -41,7 +42,7 @@ async fn get_rustacean(id: i32, _auth: BasicAuth, db: DbConn) -> Result<Value, C
     db.run(move |c|{
         RustaceansRepository::find(c, id)
             .map(|r|{json!(r)})
-            .map_err(|e| 
+            .map_err(|e|
                 match e {
                     diesel::result::Error::NotFound => Custom(Status::NotFound, json!(e.to_string())),
                     _ => Custom(Status::InternalServerError, json!(e.to_string())),
@@ -98,6 +99,20 @@ fn unprocessable_entity() -> Value {
     json!({"message": "unprocessable entity ! Check for The Body Request "})
 }
 
+async fn run_db_migrations(rocket: Rocket<Build>) -> Rocket<Build>{
+    use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
+
+    const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
+
+    DbConn::get_one(&rocket)
+        .await
+        .expect("unable to retrieve connection").run(|c| {
+            c.run_pending_migrations(MIGRATIONS).expect("Migrations Failed");
+        })
+        .await;
+    rocket
+}
+
 #[rocket::main]
 async fn main() {
     let _ = rocket::build()
@@ -111,6 +126,7 @@ async fn main() {
         ])
         .register("/", catchers![not_found, not_authorized, unprocessable_entity])
         .attach(DbConn::fairing())
+        .attach(AdHoc::on_ignite("Diesel Migrations", run_db_migrations))
         .launch()
         .await;
 }
