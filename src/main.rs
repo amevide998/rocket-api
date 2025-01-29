@@ -3,9 +3,11 @@
 mod auth;
 mod models;
 mod schema;
+mod repositories;
 
-use diesel::prelude::*;
+use rocket::http::Status;
 use rocket::response::status;
+use rocket::response::status::Custom;
 use rocket::serde::json::{Value, json, Json};
 use rocket_sync_db_pools::database;
 use crate::auth::BasicAuth;
@@ -13,6 +15,9 @@ use crate::auth::BasicAuth;
 use schema::rustaceans;
 use models::Rustacean;
 use crate::models::NewRustacean;
+
+
+use repositories::RustaceansRepository;
 
 #[database("sqlite")]
 struct DbConn(diesel::SqliteConnection);
@@ -23,55 +28,57 @@ fn hello() -> Value {
 }
 
 #[get("/rustaceans")]
-async fn get_rustaceans(_auth: BasicAuth, db: DbConn) -> Value {
+async fn get_rustaceans(_auth: BasicAuth, db: DbConn) -> Result<Value, Custom<Value>> {
     db.run(|c| {
-        let rustaceans = rustaceans::table.order(rustaceans::id.desc()).limit(1000).load::<Rustacean>(c).expect("DB Error");
-        json!(rustaceans)
+        RustaceansRepository::find_multiple(c, 100)
+            .map(|r|{json!(r)})
+            .map_err(|e| Custom(Status::InternalServerError, json!(e.to_string())))
     }).await
 }
 
 #[get("/rustacean/<id>")]
-async fn get_rustacean(id: i32, _auth: BasicAuth, db: DbConn) -> Value {
+async fn get_rustacean(id: i32, _auth: BasicAuth, db: DbConn) -> Result<Value, Custom<Value>>  {
     db.run(move |c|{
-        let result = rustaceans::table
-            .find(id)
-            .get_result::<Rustacean>(c).expect("DB Error");
-        json!(result)
+        RustaceansRepository::find(c, id)
+            .map(|r|{json!(r)})
+            .map_err(|e| 
+                match e {
+                    diesel::result::Error::NotFound => Custom(Status::NotFound, json!(e.to_string())),
+                    _ => Custom(Status::InternalServerError, json!(e.to_string())),
+                }
+            )
     }).await
 }
 
 #[post("/rustacean", format = "json", data = "<new_rustacean>")]
-async fn create_rustacean(_auth: BasicAuth, db: DbConn, new_rustacean: Json<NewRustacean>) -> Value {
+async fn create_rustacean(_auth: BasicAuth, db: DbConn, new_rustacean: Json<NewRustacean>) -> Result<Value, Custom<Value>>  {
     db.run(|c| {
-        let result = diesel::insert_into(rustaceans::table)
-            .values(new_rustacean.into_inner())
-            .execute(c)
-            .expect("Error inserting new rustacean");
-        json!(result)
+        RustaceansRepository::save(c, new_rustacean.into_inner())
+            .map(|r|{json!(r)})
+            .map_err(|e| Custom(Status::InternalServerError, json!(e.to_string())))
     }).await
 }
 
 #[put("/rustacean/<id>", format = "json", data = "<rustacean>")]
-async fn update_rustacean(id: i32, _auth: BasicAuth, rustacean: Json<Rustacean>, db: DbConn) -> Value {
+async fn update_rustacean(id: i32, _auth: BasicAuth, rustacean: Json<Rustacean>, db: DbConn) -> Result<Value, Custom<Value>>  {
     db.run(move |c| {
-        let result = diesel::update(rustaceans::table.find(id))
-            .set(
-                (rustaceans::name.eq(rustacean.name.to_owned()),
-                 rustaceans::email.eq(rustacean.email.to_owned()))
-            )
-            .execute(c)
-            .expect("Error updating rustacean");
-        json!(result)
+        RustaceansRepository::update(c, id, rustacean.into_inner())
+            .map(|r|{json!(r)})
+            .map_err(|e| Custom(Status::InternalServerError, json!(e.to_string())))
     }).await
 }
 
 #[delete("/rustacean/<id>")]
-async fn delete_rustacean(id: i32, _auth: BasicAuth, db: DbConn) -> status::NoContent {
+async fn delete_rustacean(id: i32, _auth: BasicAuth, db: DbConn) -> Result<status::NoContent, Custom<Value>> {
     db.run(move |c| {
-        diesel::delete(rustaceans::table.find(id))
-            .execute(c)
-            .expect("Error deleting rustacean");
-        status::NoContent
+        if RustaceansRepository::find(c, id)
+            .is_err(){
+            return Err(Custom(Status::NotFound, json!("Record Not Found")));
+        }
+
+        RustaceansRepository::delete(c, id)
+            .map(|_| status::NoContent)
+            .map_err(|e| Custom(Status::InternalServerError, json!(e.to_string())))
     }).await
 }
 
